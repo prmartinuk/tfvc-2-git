@@ -11,7 +11,7 @@ using Tfvc2Git.Core.RunHandlers.Base;
 
 namespace Tfvc2Git.Core.RunHandlers
 {
-    public sealed class ConvertRunHandler : RunHandlerBase<ConvertOptions>
+	public sealed class ConvertRunHandler : RunHandlerBase<ConvertOptions>
     {
         #region Fields
         private readonly Tfvc2GitRepository _repository;
@@ -214,7 +214,16 @@ namespace Tfvc2Git.Core.RunHandlers
                 }
 
                 if (fileChanges.Any(x => x.ChangeType.HasBranch()))
-                    Log.Warning(" - Branching from outside configured branches will be treated as checkin.");
+                {
+                    if (fileChanges.Any(x => !x.ChangeType.HasBranch()))
+                    {
+                        Log.Warning(" - Branching of individual files within a repo is not supported in git - will be treated as new checkin.");
+                    }
+                    else
+                    {
+                        Log.Warning(" - Branching from outside configured branches - will be treated as checkin.");
+                    }
+                }
 
                 if (_repository.Git.RetrieveStatus().IsDirty)
                     _repository.Clean();
