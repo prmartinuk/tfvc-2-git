@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Linq;
 using LibGit2Sharp;
 using Tfvc2Git.Core.ActionHandlers;
@@ -267,6 +268,41 @@ namespace Tfvc2Git.Core.RunHandlers
                         case ChangesetToCommitHandler.TransformResult.Fail:
                         default:
                             throw new ArgumentOutOfRangeException();
+                    }
+                }
+
+                // TFVC has an bug that if you delete a branched folder as part of a wider changeset that leaves some files in
+                // a different branched folder, then the branching information is not updated to indicate the branch was deleted
+                // even though the folder no longer exists.
+                // If a same named folder is subsequently re-branched the TFVC history will report that the new branched folder
+                // is a continuation of the old branched folder, even though a new branch information record will be created.
+
+                // Check to see if all files have been removed from this folder (ignoring git or migration control files),
+                // assume this means that the folder itself was deleted.
+                bool tfvcFolderDeleted = true;
+                string dotGitFolder = Path.Combine(_repository.Config.GitLocalPath, ".git");
+                foreach (string filePath in Directory.EnumerateFiles(_repository.Config.GitLocalPath, "*", SearchOption.AllDirectories))
+                {
+                    if (!filePath.StartsWith(dotGitFolder))
+                    {
+                        string fileName = Path.GetFileName(filePath);
+                        if ((fileName != ".gitignore") &&
+                            (fileName != ".tfvc-2-git"))
+                        {
+                            tfvcFolderDeleted = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (tfvcFolderDeleted)
+                {
+                    // Change to a different branch (if one exists) so that we can delete the branch.
+                    Branch firstBranch = _repository.Git.Branches.FirstOrDefault(b => b.FriendlyName != branch.FriendlyName);
+                    if (firstBranch != null)
+                    {
+                        _repository.Checkout(firstBranch.FriendlyName);
+                        _repository.Git.Branches.Remove(branch.FriendlyName);
                     }
                 }
 
