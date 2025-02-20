@@ -65,10 +65,17 @@ namespace Tfvc2Git.Core.Configuration
                 foreach (var branch in branches)
                 {
                     var changeset = branch.TfvcHistory.Single(x => x.ChangesetId == changesetId);
-                    _config.History.Add(new HistoryEntry
+                    string message = changeset.Comment ?? string.Empty;
+
+                    if (changeset.WorkItems.Any())
+                    {
+                        message += "\r\n\r\nRefs: #" + string.Join(", #", changeset.WorkItems.Select(wi => wi.Id));
+                    }
+
+					_config.History.Add(new HistoryEntry
                     {
                         ChangesetId = changesetId,
-                        Message = changeset.Comment ?? string.Empty,
+                        Message = message,
                         Date = date,
                         Branch = branch,
                         Changeset = changeset,
