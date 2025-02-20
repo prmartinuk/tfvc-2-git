@@ -118,16 +118,6 @@ namespace Tfvc2Git.Core.RunHandlers
                 var branch = _repository.Git.Branches[branchMap.GitBranchName];
                 if (null == branch)
                 {
-                    if (branchMap.InitFromFirstMainCommit)
-                    {
-                        throw new NotImplementedException(nameof(branchMap.InitFromFirstMainCommit));
-                    }
-
-                    if (branchMap.InitFromChangesetId.HasValue)
-                    {
-                        throw new NotImplementedException(nameof(branchMap.InitFromChangesetId));
-                    }
-
                     using (var branching = new BranchingHandler())
                     {
                         branching.Handle(_repository, branchMap, historyEntry);

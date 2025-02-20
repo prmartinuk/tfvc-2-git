@@ -15,19 +15,44 @@ namespace Tfvc2Git.Core.ActionHandlers
     {
         public void Handle(Tfvc2GitRepository repository, BranchMap branchMap, HistoryEntry historyEntry, bool filterByHistory = true)
         {
-            var branchFilter = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            branchFilter.AddRange(repository.Config.Branches.Select(x => x.TfvcServerPath));
-
-            var parentRootChangesetId = -1;
-            ItemIdentifier sourceItemIdentifier = null;
-
-            ItemSpec[] itemSpecs = new ItemSpec[] { new ItemSpec(branchMap.TfvcServerPath, RecursionType.OneLevel) };
-            BranchHistoryTreeItem[][] branchHistoryTrees = repository.Tfvc.Vcs.GetBranchHistory(itemSpecs, new ChangesetVersionSpec(historyEntry.ChangesetId));
-            foreach (var branchHistoryTree in branchHistoryTrees)
+            if (branchMap.InitFromFirstMainCommit)
             {
-                foreach (var item in branchHistoryTree)
+                Handle(repository, historyEntry, repository.InitialCommitSha);
+            }
+            else if (branchMap.InitFromChangesetId.HasValue)
+            {
+                HistoryEntry branchFrom = repository.Config.History.FirstOrDefault(he => he.ChangesetId == branchMap.InitFromChangesetId.Value);
+
+                if (branchFrom != null)
                 {
-                    FindParentBranch(branchMap, historyEntry, branchFilter, ref parentRootChangesetId, ref sourceItemIdentifier, item);
+                    Handle(repository, historyEntry, branchFrom.ChangesetId, branchFrom.Branch.TfvcServerPath);
+                }
+                else
+                {
+                    Log.Fatal(" - InitFromChangesetId for branch {ServerPath} does not exist!", branchMap.TfvcServerPath);
+                }
+            }
+            else
+            {
+                var branchFilter = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                branchFilter.AddRange(repository.Config.Branches.Select(x => x.TfvcServerPath));
+
+                var parentRootChangesetId = -1;
+                ItemIdentifier sourceItemIdentifier = null;
+
+                ItemSpec[] itemSpecs = new ItemSpec[] { new ItemSpec(branchMap.TfvcServerPath, RecursionType.OneLevel) };
+                BranchHistoryTreeItem[][] branchHistoryTrees = repository.Tfvc.Vcs.GetBranchHistory(itemSpecs, new ChangesetVersionSpec(historyEntry.ChangesetId));
+                foreach (var branchHistoryTree in branchHistoryTrees)
+                {
+                    foreach (var item in branchHistoryTree)
+                    {
+                        FindParentBranch(branchMap, historyEntry, branchFilter, ref parentRootChangesetId, ref sourceItemIdentifier, item);
+
+                        if (sourceItemIdentifier != null)
+                        {
+                            break;
+                        }
+                    }
 
                     if (sourceItemIdentifier != null)
                     {
@@ -37,66 +62,61 @@ namespace Tfvc2Git.Core.ActionHandlers
 
                 if (sourceItemIdentifier != null)
                 {
-                    break;
-                }
-            }
+                    var targetItemIdentifier = new[] { new ItemIdentifier(branchMap.TfvcServerPath) };
+                    var allChangesetIds = repository.Config.History
+                        .Where(x => x.ChangesetId < historyEntry.ChangesetId)
+                        .Where(x => x.ChangesetId >= parentRootChangesetId)
+                        .Select(x => x.ChangesetId)
+                        .Distinct()
+                        .ToArray();
+                    var extendedMerges = new List<ExtendedMerge>();
+                    var changesetIdsTemp = allChangesetIds.ToList();
+                    const int chunkSize = 50;
+                    while (changesetIdsTemp.Any())
+                    {
+                        var currentIds = changesetIdsTemp.Take(chunkSize).ToList();
+                        var merges = repository.Tfvc.Vcs.TrackMerges(currentIds.ToArray(), sourceItemIdentifier, targetItemIdentifier, null);
+                        extendedMerges.AddRange(merges);
+                        changesetIdsTemp = changesetIdsTemp.Skip(chunkSize).ToList();
+                    }
 
-            if (sourceItemIdentifier != null)
-            {
-                var targetItemIdentifier = new[] { new ItemIdentifier(branchMap.TfvcServerPath) };
-                var allChangesetIds = repository.Config.History
-                    .Where(x => x.ChangesetId < historyEntry.ChangesetId)
-                    .Where(x => x.ChangesetId >= parentRootChangesetId)
-                    .Select(x => x.ChangesetId)
-                    .Distinct()
-                    .ToArray();
-                var extendedMerges = new List<ExtendedMerge>();
-                var changesetIdsTemp = allChangesetIds.ToList();
-                const int chunkSize = 50;
-                while (changesetIdsTemp.Any())
-                {
-                    var currentIds = changesetIdsTemp.Take(chunkSize).ToList();
-                    var merges = repository.Tfvc.Vcs.TrackMerges(currentIds.ToArray(), sourceItemIdentifier, targetItemIdentifier, null);
-                    extendedMerges.AddRange(merges);
-                    changesetIdsTemp = changesetIdsTemp.Skip(chunkSize).ToList();
-                }
-
-                var mergeChangesetIds = extendedMerges
-                    .Where(x => x.TargetChangeset.ChangesetId == historyEntry.ChangesetId)
-                    .Select(x => x.SourceChangeset.ChangesetId)
-                    .ToList();
-
-                Log.Debug(" - Found {mergeChangesetIdsCount} possibles source changesetIds", mergeChangesetIds.Count);
-                if (filterByHistory)
-                {
-                    mergeChangesetIds = mergeChangesetIds
-                        .Where(x => repository.Config.History.Any(xx => xx.ChangesetId == x))
+                    var mergeChangesetIds = extendedMerges
+                        .Where(x => x.TargetChangeset.ChangesetId == historyEntry.ChangesetId)
+                        .Select(x => x.SourceChangeset.ChangesetId)
                         .ToList();
-                    Log.Debug(" - {mergeChangesetIdsCount} possibles source changesetIds left after filtering by know history", mergeChangesetIds.Count);
-                }
 
-                if (mergeChangesetIds.Any())
-                {
-                    var rootChangeset = mergeChangesetIds.Max();
-                    Handle(repository, historyEntry, rootChangeset, sourceItemIdentifier.Item);
+                    Log.Debug(" - Found {mergeChangesetIdsCount} possibles source changesetIds", mergeChangesetIds.Count);
+                    if (filterByHistory)
+                    {
+                        mergeChangesetIds = mergeChangesetIds
+                            .Where(x => repository.Config.History.Any(xx => xx.ChangesetId == x))
+                            .ToList();
+                        Log.Debug(" - {mergeChangesetIdsCount} possibles source changesetIds left after filtering by know history", mergeChangesetIds.Count);
+                    }
+
+                    if (mergeChangesetIds.Any())
+                    {
+                        var rootChangeset = mergeChangesetIds.Max();
+                        Handle(repository, historyEntry, rootChangeset, sourceItemIdentifier.Item);
+                    }
+                    else
+                    {
+                        Log.Warning(" - Unable to find a changeset, fallback to Initial commit {GitSha} as source", repository.InitialCommitSha);
+                        Handle(repository, historyEntry, repository.InitialCommitSha);
+                    }
                 }
                 else
                 {
-                    Log.Warning(" - Unable to find a changeset, fallback to Initial commit {GitSha} as source", repository.InitialCommitSha);
+                    if (parentRootChangesetId > 0)
+                    {
+                        Log.Warning(" - Source branch is not one of the filtered branches, fallback to Initial commit {GitSha} as source", repository.InitialCommitSha);
+                    }
+                    else
+                    {
+                        Log.Error(" - No parent branch found for {ServerPath}!", branchMap.TfvcServerPath);
+                    }
                     Handle(repository, historyEntry, repository.InitialCommitSha);
                 }
-            }
-            else
-            {
-                if (parentRootChangesetId > 0)
-                {
-                    Log.Warning(" - Source branch is not one of the filtered branches, fallback to Initial commit {GitSha} as source", repository.InitialCommitSha);
-                }
-                else
-                {
-                    Log.Error(" - No parent branch found for {ServerPath}!", branchMap.TfvcServerPath);
-                }
-                Handle(repository, historyEntry, repository.InitialCommitSha);
             }
         }
 
